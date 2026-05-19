@@ -8,9 +8,12 @@ import {
 } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'react-hot-toast'
-import { api } from '@/lib/api'
+import { api, buildSessionWsUrl } from '@/lib/api'
 import { useStore } from '@/store/useStore'
 import type { Avatar, ChatMessage, WsMessage } from '@/lib/types'
+
+const WS_AUTH_REJECT_CODE = 4401  // matches backend close code for auth/ownership failure
+const MAX_WS_RECONNECT_ATTEMPTS = 6
 
 const CHAT_LANGUAGES = [
   { code: 'en', label: 'EN' }, { code: 'es', label: 'ES' }, { code: 'fr', label: 'FR' },
@@ -34,7 +37,7 @@ interface VideoChunk {
 
 interface ChatInterfaceProps {
   avatarId: string
-  voiceWavPath?: string
+  voiceId?: string
   onSessionCreated?: (sessionId: string) => void
 }
 
@@ -143,7 +146,7 @@ function IdleAvatar({ imageUrl }: { imageUrl: string | null }) {
   )
 }
 
-export function ChatInterface({ avatarId, voiceWavPath, onSessionCreated }: ChatInterfaceProps) {
+export function ChatInterface({ avatarId, voiceId, onSessionCreated }: ChatInterfaceProps) {
   const setWsConnected = useStore((s) => s.setWsConnected)
 
   const [messages, setMessages] = useState<Message[]>([])
@@ -192,9 +195,11 @@ export function ChatInterface({ avatarId, voiceWavPath, onSessionCreated }: Chat
         const av = avatars.find((a: Avatar) => a.id === avatarId)
         if (av) {
           setAvatarImageUrl(av.thumbnail_url || av.image_url || null)
+        } else {
+          toast.error('Could not load avatar image')
         }
       })
-      .catch(() => {})
+      .catch(() => toast.error('Could not load avatar image'))
   }, [avatarId])
 
   // ── Chunk queue player ───────────────────────────────────────────────────
@@ -277,21 +282,18 @@ export function ChatInterface({ avatarId, voiceWavPath, onSessionCreated }: Chat
   })
 
   const connectWebSocket = useCallback((sid: string) => {
-    // Convert http(s) URL to ws(s)
-    const rawUrl = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:8000'
-    const wsUrl = rawUrl.replace(/^http/, 'ws')
-    const websocket = new WebSocket(`${wsUrl}/ws/session/${sid}`)
+    const websocket = new WebSocket(buildSessionWsUrl(sid))
+    const wasFreshConnect = reconnectAttemptsRef.current === 0
 
     websocket.onopen = () => {
       reconnectAttemptsRef.current = 0
       setConnectionStatus('connected')
       setWsConnected(true)
-      if (reconnectAttemptsRef.current === 0) {
+      if (wasFreshConnect) {
         toast.success('Connected to avatar!', { icon: '✨' })
       }
-      // Apply voice if provided
-      if (voiceWavPath) {
-        websocket.send(JSON.stringify({ type: 'set_voice', voice_wav_path: voiceWavPath }))
+      if (voiceId) {
+        websocket.send(JSON.stringify({ type: 'set_voice', voice_id: voiceId }))
       }
     }
     websocket.onmessage = (event) => {
@@ -301,31 +303,42 @@ export function ChatInterface({ avatarId, voiceWavPath, onSessionCreated }: Chat
       setConnectionStatus('disconnected')
       setWsConnected(false)
     }
-    websocket.onclose = () => {
+    websocket.onclose = (event) => {
       setConnectionStatus('disconnected')
       setWsConnected(false)
-      // Exponential backoff reconnect (max 30s)
-      const sid = sessionIdRef.current
-      if (!sid) return
+
+      // 4401 = backend rejected the handshake (no token, bad token, or not the
+      // session owner). No point reconnecting — surface a clear error instead.
+      if (event.code === WS_AUTH_REJECT_CODE) {
+        toast.error('Not authorised to join this session — please sign in again.')
+        return
+      }
+
+      const sidNow = sessionIdRef.current
+      if (!sidNow) return
+      if (reconnectAttemptsRef.current >= MAX_WS_RECONNECT_ATTEMPTS) {
+        toast.error('Lost connection to avatar. Please refresh the page.')
+        return
+      }
       const delay = Math.min(1000 * 2 ** reconnectAttemptsRef.current, 30000)
       reconnectAttemptsRef.current += 1
-      reconnectTimerRef.current = setTimeout(() => connectWebSocket(sid), delay)
+      reconnectTimerRef.current = setTimeout(() => connectWebSocket(sidNow), delay)
     }
 
     setWs(websocket)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voiceWavPath, setWsConnected])
+  }, [voiceId, setWsConnected])
 
   const handleWebSocketMessage = useCallback((data: WsMessage) => {
     switch (data.type) {
       // Live token stream — accumulate into a streaming bubble
       case 'token':
-        setStreamingContent(prev => prev + (data.token ?? ''))
-        setIsTyping(false) // no longer showing the dots — showing real text
+        setStreamingContent(prev => prev + data.token)
+        setIsTyping(false)
         break
 
       case 'transcription': {
-        const text = data.text ?? ''
+        const text = data.text
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           role: 'user',
@@ -339,8 +352,7 @@ export function ChatInterface({ avatarId, voiceWavPath, onSessionCreated }: Chat
       }
 
       case 'message': {
-        // Full message assembled — replace streaming bubble with a proper message
-        const content = data.content ?? ''
+        const content = data.content
         setStreamingContent('')
         setIsTyping(false)
         setMessages(prev => [...prev, {
@@ -356,13 +368,13 @@ export function ChatInterface({ avatarId, voiceWavPath, onSessionCreated }: Chat
 
       case 'video_chunk_start':
         chunkQueueRef.current = []
-        setCurrentChunkProgress({ current: 0, total: data.total_chunks ?? 0 })
+        setCurrentChunkProgress({ current: 0, total: data.total_chunks })
         break
 
       case 'video_chunk': {
-        const chunk: VideoChunk = { url: data.video_url ?? '', text: data.text ?? '' }
+        const chunk: VideoChunk = { url: data.video_url, text: data.text }
         chunkQueueRef.current.push(chunk)
-        setCurrentChunkProgress(prev => ({ current: (data.chunk_index ?? 0) + 1, total: prev.total }))
+        setCurrentChunkProgress(prev => ({ current: data.chunk_index + 1, total: prev.total }))
         // First chunk arriving → record latency, clear spinner, start playback
         if (!isPlayingRef.current) {
           if (sendTimeRef.current) setLatencyMs(Date.now() - sendTimeRef.current)
@@ -389,9 +401,12 @@ export function ChatInterface({ avatarId, voiceWavPath, onSessionCreated }: Chat
         break
 
       case 'error':
-        toast.error(data.message ?? 'An error occurred')
+        toast.error(data.message)
         setIsProcessing(false)
         setIsTyping(false)
+        break
+
+      case 'pong':
         break
     }
   }, [playNextChunk])

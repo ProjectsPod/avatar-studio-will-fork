@@ -6,6 +6,7 @@ import {
   Volume2, Wand2, Music, AlertCircle, PlusCircle, RefreshCw,
 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
+import { api } from '@/lib/api'
 import type { VoiceApiResponse, ApiError } from '@/lib/types'
 
 interface VoiceProfile {
@@ -59,8 +60,6 @@ interface VoicePanelProps {
   onVoiceSelect?: (voiceId: string) => void
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
 export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
   const [voices, setVoices] = useState<VoiceProfile[]>(PRESET_VOICES)
   const [selectedVoice, setSelectedVoice] = useState<string>(PRESET_VOICES[0].id)
@@ -76,6 +75,11 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
   const [step, setStep] = useState<'select' | 'record' | 'name'>('select')
   const [recordMode, setRecordMode] = useState<'mic' | 'file'>('mic')
 
+  // Voice library preview state — playback of an existing custom voice's WAV
+  const [previewingId, setPreviewingId] = useState<string | null>(null)
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null)
+  const previewUrlRef = useRef<string | null>(null)
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
@@ -87,11 +91,10 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
 
   // Load persisted custom voices from backend on mount
   useEffect(() => {
-    fetch(`${API_BASE}/api/v1/voices/`)
-      .then(r => r.json())
+    api.listVoices()
       .then((data: VoiceApiResponse[]) => {
         if (!Array.isArray(data) || data.length === 0) return
-        const custom: VoiceProfile[] = data.map((v: VoiceApiResponse) => ({
+        const custom: VoiceProfile[] = data.map((v) => ({
           id: v.id,
           name: v.name,
           language: v.language || 'en',
@@ -101,8 +104,62 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
         }))
         setVoices([...PRESET_VOICES, ...custom])
       })
-      .catch(() => { /* backend may not be up yet */ })
+      .catch(() => { /* backend may not be up yet — keep presets */ })
   }, [])
+
+  // Clean up any in-flight preview when the panel unmounts.
+  useEffect(() => () => {
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause()
+      previewAudioRef.current = null
+    }
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = null
+    }
+  }, [])
+
+  const stopPreview = useCallback(() => {
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause()
+      previewAudioRef.current = null
+    }
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = null
+    }
+    setPreviewingId(null)
+  }, [])
+
+  const playPreview = useCallback(async (voiceId: string) => {
+    // Preset voices have no recorded sample — bail with a helpful toast
+    if (voiceId.startsWith('default-')) {
+      toast('Preset voices are previewed in chat', { icon: '🎧' })
+      return
+    }
+    if (previewingId === voiceId) {
+      stopPreview()
+      return
+    }
+    stopPreview()
+    try {
+      const blob = await api.fetchVoicePreviewBlob(voiceId)
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audio.onended = stopPreview
+      audio.onerror = () => {
+        toast.error('Could not play preview')
+        stopPreview()
+      }
+      previewUrlRef.current = url
+      previewAudioRef.current = audio
+      setPreviewingId(voiceId)
+      await audio.play()
+    } catch {
+      toast.error('Could not load preview')
+      stopPreview()
+    }
+  }, [previewingId, stopPreview])
 
   const startRecording = useCallback(async () => {
     try {
@@ -130,7 +187,7 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
       const chunks: Blob[] = []
       recorder.ondataavailable = (e) => chunks.push(e.data)
       recorder.onstop = () => {
-        cancelAnimationFrame(animFrameRef.current!)
+        if (animFrameRef.current !== null) cancelAnimationFrame(animFrameRef.current)
         setWaveHeights(Array(20).fill(4))
         stream.getTracks().forEach(t => t.stop())
         audioCtx.close()
@@ -204,25 +261,7 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
     }
     setIsCloning(true)
     try {
-      const formData = new FormData()
-      formData.append('audio', audioBlob, 'voice_sample.webm')
-      formData.append('name', newVoiceName.trim())
-      formData.append('language', newVoiceLang)
-
-      const res = await fetch(`${API_BASE}/api/v1/voices/clone`, {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (!res.ok) {
-        let detail = 'Voice cloning failed'
-        try {
-          const body = await res.json()
-          detail = body.detail || detail
-        } catch {}
-        throw new Error(detail)
-      }
-      const data = await res.json()
+      const data = await api.cloneVoice(audioBlob, newVoiceName.trim(), newVoiceLang)
 
       const newProfile: VoiceProfile = {
         id: data.id,
@@ -243,16 +282,18 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
       setNewVoiceLang('en')
       setStep('select')
     } catch (err: unknown) {
-      toast.error((err as ApiError)?.message || 'Voice cloning failed — check backend is running')
+      const detail = (err as ApiError)?.response?.data?.detail || (err as ApiError)?.message
+      toast.error(detail || 'Voice cloning failed — check backend is running')
     } finally {
       setIsCloning(false)
     }
   }
 
   const deleteVoice = async (id: string) => {
+    if (previewingId === id) stopPreview()
     try {
-      await fetch(`${API_BASE}/api/v1/voices/${id}`, { method: 'DELETE' })
-    } catch { /* ignore network errors */ }
+      await api.deleteVoice(id)
+    } catch { /* ignore network errors — local state still updates */ }
     setVoices(v => v.filter(x => x.id !== id))
     if (selectedVoice === id) {
       setSelectedVoice(PRESET_VOICES[0].id)
@@ -286,6 +327,7 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
         <div className="space-y-2 overflow-y-auto max-h-96 messages-scroll">
           {voices.map((voice) => {
             const isSelected = selectedVoice === voice.id
+            const isPreviewing = previewingId === voice.id
             return (
               <div
                 key={voice.id}
@@ -321,6 +363,23 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
                   </div>
                 </div>
 
+                {/* Preview button — custom voices only */}
+                {!voice.isDefault && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); playPreview(voice.id) }}
+                    className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0
+                                transition-all duration-200
+                                ${isPreviewing
+                                  ? 'bg-primary-600 text-white'
+                                  : 'bg-surface-700/0 hover:bg-primary-600/30 text-gray-500 hover:text-primary-300 opacity-0 group-hover:opacity-100'
+                                }`}
+                    title={isPreviewing ? 'Stop preview' : 'Preview voice sample'}
+                    aria-label={isPreviewing ? 'Stop preview' : 'Preview voice sample'}
+                  >
+                    {isPreviewing ? <Pause size={12} /> : <Play size={12} />}
+                  </button>
+                )}
+
                 {isSelected ? (
                   <div className="w-6 h-6 rounded-full bg-primary-500 flex items-center justify-center flex-shrink-0">
                     <Check size={13} className="text-white" />
@@ -331,6 +390,7 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
                     className="w-7 h-7 rounded-lg bg-red-600/0 hover:bg-red-600/30 flex items-center justify-center
                                text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100
                                transition-all duration-200 flex-shrink-0"
+                    aria-label="Delete voice"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -363,13 +423,17 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
                       {v.isDefault ? <span className="badge-blue">Preset Voice</span> : <span className="badge-purple">Custom Clone</span>}
                     </div>
                   </div>
-                  <button
-                    onClick={() => setStep('record')}
-                    className="btn-secondary mt-2"
-                  >
-                    <Wand2 size={16} />
-                    Clone a New Voice
-                  </button>
+                  <div className="flex gap-2 mt-2">
+                    {!v.isDefault && (
+                      <button onClick={() => playPreview(v.id)} className="btn-secondary">
+                        {previewingId === v.id ? <><Pause size={16} /> Stop</> : <><Play size={16} /> Preview</>}
+                      </button>
+                    )}
+                    <button onClick={() => setStep('record')} className="btn-secondary">
+                      <Wand2 size={16} />
+                      Clone a New Voice
+                    </button>
+                  </div>
                 </div>
               )
             })()}
@@ -407,8 +471,8 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
               <AlertCircle size={16} className="text-accent-400 mt-0.5 flex-shrink-0" />
               <p className="text-sm text-gray-300">
                 {recordMode === 'mic'
-                  ? <>Record at least <strong className="text-white">5 seconds</strong> of clear speech. Read naturally — avoid background noise.</>
-                  : <>Upload an audio file (MP3, WAV, M4A, OGG) with at least <strong className="text-white">5 seconds</strong> of clear speech.</>
+                  ? <>Record at least <strong className="text-white">10 seconds</strong> of clear speech. Read naturally — avoid background noise.</>
+                  : <>Upload an audio file (MP3, WAV, M4A, OGG) with at least <strong className="text-white">10 seconds</strong> of clear speech.</>
                 }
               </p>
             </div>
@@ -418,6 +482,7 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
               <div className="flex flex-col items-center gap-6 py-4">
                 <button
                   onClick={isRecording ? stopRecording : startRecording}
+                  aria-label={isRecording ? 'Stop recording' : 'Start recording'}
                   className={`relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300
                     ${isRecording
                       ? 'bg-red-600 shadow-[0_0_40px_rgba(239,68,68,0.5)] scale-110'
@@ -498,6 +563,7 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
             <div className="flex items-center gap-4 px-4 py-3 rounded-xl bg-surface-700/60 border border-white/8">
               <button
                 onClick={togglePlay}
+                aria-label={isPlaying ? 'Pause playback' : 'Play sample'}
                 className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-600 to-accent-600 flex items-center justify-center flex-shrink-0 hover:shadow-glow transition-all"
               >
                 {isPlaying ? <Pause size={18} className="text-white" /> : <Play size={18} className="text-white ml-0.5" />}
@@ -580,8 +646,8 @@ export function VoicePanel({ onVoiceSelect }: VoicePanelProps = {}) {
           <div>
             <p className="text-sm font-semibold text-white mb-1">How voice cloning works</p>
             <p className="text-xs text-gray-500 leading-relaxed">
-              Record 5–30 seconds of your voice reading naturally. The system extracts a speaker embedding
-              using XTTS v2 and applies it as the avatar's voice during TTS synthesis.
+              Record 10–60 seconds of your voice reading naturally. Chatterbox Multilingual extracts a
+              speaker embedding and applies it as the avatar's voice during TTS synthesis. 23 languages supported.
             </p>
           </div>
         </div>

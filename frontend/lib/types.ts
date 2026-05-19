@@ -5,9 +5,14 @@ export interface Avatar {
   thumbnail_url?: string
   image_url?: string
   s3_key?: string
+  voice_id?: string | null
   avatar_metadata?: {
     system_prompt?: string
+    personality?: string
+    background_color?: string
+    animation_style?: string
   }
+  created_at?: string
 }
 
 export interface ChatMessage {
@@ -15,6 +20,15 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   created_at: string
+}
+
+export interface SessionSummary {
+  id: string
+  user_id: string
+  avatar_id: string
+  status: 'active' | 'paused' | 'ended'
+  started_at: string
+  ended_at?: string | null
 }
 
 export type WsMessageType =
@@ -26,18 +40,20 @@ export type WsMessageType =
   | 'video_chunk_end'
   | 'status'
   | 'error'
+  | 'pong'
 
-export interface WsMessage {
-  type: WsMessageType
-  token?: string
-  text?: string
-  content?: string
-  total_chunks?: number
-  chunk_index?: number
-  video_url?: string
-  message?: string
-  stage?: string
-}
+// Discriminated union — each WS event has a well-typed payload so the handler
+// can rely on field presence without optional-chaining everywhere.
+export type WsMessage =
+  | { type: 'token'; token: string }
+  | { type: 'transcription'; text: string }
+  | { type: 'message'; role: 'assistant'; content: string }
+  | { type: 'video_chunk_start'; total_chunks: number }
+  | { type: 'video_chunk'; chunk_index: number; total_chunks: number; video_url: string; text: string }
+  | { type: 'video_chunk_end'; sent_chunks: number }
+  | { type: 'status'; message: string; stage?: string }
+  | { type: 'error'; message: string }
+  | { type: 'pong' }
 
 export interface VoiceApiResponse {
   id: string

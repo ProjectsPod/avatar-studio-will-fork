@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Trash2, Check, User, Loader2, RefreshCw, Play, Settings2, Save, X } from 'lucide-react'
+import { Trash2, Check, User, Loader2, RefreshCw, Play, Settings2, Save, X, Mic2, MicOff } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { api } from '@/lib/api'
 import Image from 'next/image'
@@ -52,6 +52,15 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
       queryClient.invalidateQueries({ queryKey: ['avatars'] })
     },
     onError: () => toast.error('Failed to delete avatar'),
+  })
+
+  const unsetVoiceMutation = useMutation({
+    mutationFn: (avatarId: string) => api.unsetAvatarVoice(avatarId),
+    onSuccess: () => {
+      toast.success('Voice unassigned')
+      queryClient.invalidateQueries({ queryKey: ['avatars'] })
+    },
+    onError: () => toast.error('Failed to unassign voice'),
   })
 
   const openEditor = (avatar: Avatar) => {
@@ -132,9 +141,9 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                 >
                   {/* Image */}
                   <div className="aspect-square relative bg-surface-700 overflow-hidden">
-                    {avatar.thumbnail_url || avatar.image_url ? (
+                    {(avatar.thumbnail_url || avatar.image_url) ? (
                       <Image
-                        src={avatar.thumbnail_url || avatar.image_url}
+                        src={(avatar.thumbnail_url || avatar.image_url) as string}
                         alt={avatar.name}
                         fill
                         className="object-cover transition-transform duration-500 group-hover:scale-110"
@@ -206,9 +215,30 @@ export function AvatarList({ selectedAvatar, onSelectAvatar }: AvatarListProps) 
                     <div className="flex items-center gap-1.5 mt-1">
                       <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
                       <span className={`text-xs ${status.color}`}>{status.label}</span>
-                      {avatar.avatar_metadata?.system_prompt && (
-                        <span className="text-[10px] text-primary-400 ml-auto">🧠</span>
-                      )}
+                      <div className="ml-auto flex items-center gap-1.5">
+                        {avatar.avatar_metadata?.system_prompt && (
+                          <span title="Custom personality" aria-label="Has custom personality" className="text-[10px] text-primary-400">🧠</span>
+                        )}
+                        {avatar.voice_id ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (window.confirm('Unassign the cloned voice from this avatar?')) {
+                                unsetVoiceMutation.mutate(avatar.id)
+                              }
+                            }}
+                            className="text-[10px] text-primary-300 hover:text-red-400 transition-colors flex items-center gap-0.5"
+                            title="Voice attached — click to unassign"
+                            aria-label="Unassign voice from this avatar"
+                          >
+                            <Mic2 size={9} />
+                          </button>
+                        ) : (
+                          <span title="No custom voice" aria-label="No custom voice" className="text-[10px] text-gray-600 flex items-center gap-0.5">
+                            <MicOff size={9} />
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
