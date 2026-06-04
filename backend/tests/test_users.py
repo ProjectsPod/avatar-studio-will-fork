@@ -96,9 +96,38 @@ async def test_update_profile(client: AsyncClient, test_user, auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_list_users(client: AsyncClient, test_user):
-    """Test listing all users."""
+async def test_list_users_requires_auth(client: AsyncClient, test_user):
+    """Listing users without a token is rejected (401)."""
     response = await client.get("/api/v1/users/")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_users_forbidden_for_non_superuser(client: AsyncClient, auth_headers):
+    """A normal authenticated user cannot list all users (403)."""
+    response = await client.get("/api/v1/users/", headers=auth_headers)
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_users_superuser_ok(client: AsyncClient, db_session):
+    """A superuser can list all users (200)."""
+    from app.models import User
+    from app.api.v1.users import get_password_hash, create_access_token
+
+    admin = User(
+        email="admin@example.com",
+        username="admin",
+        full_name="Admin",
+        hashed_password=get_password_hash("adminpass123"),
+        is_superuser=True,
+    )
+    db_session.add(admin)
+    await db_session.commit()
+    await db_session.refresh(admin)
+
+    headers = {"Authorization": f"Bearer {create_access_token(data={'sub': admin.id})}"}
+    response = await client.get("/api/v1/users/", headers=headers)
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)

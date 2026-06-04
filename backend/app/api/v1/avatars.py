@@ -25,11 +25,17 @@ def _user_id(current_user: Optional[User]) -> str:
 
 
 def _validate_uuid(avatar_id: str) -> None:
-    """Reject anything that isn't a UUID to keep S3 keys + filesystem paths safe."""
+    """
+    Reject anything that isn't a UUID to keep S3 keys + filesystem paths safe.
+
+    Returns 404 (not 400) for malformed IDs: a non-UUID can never name an
+    existing avatar, so "not found" is the correct REST semantics and it
+    avoids leaking the fact that IDs are UUIDs to a probing client.
+    """
     try:
         uuid.UUID(avatar_id)
     except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Invalid avatar ID")
+        raise HTTPException(status_code=404, detail="Avatar not found")
 
 
 @router.post("/upload", response_model=AvatarResponse, status_code=status.HTTP_201_CREATED)

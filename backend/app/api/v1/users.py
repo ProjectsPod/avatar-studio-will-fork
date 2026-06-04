@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import List, Optional
@@ -17,16 +17,36 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login", auto_error=False)
+
+# bcrypt only inspects the first 72 bytes of input and bcrypt>=4.1 raises
+# (rather than silently truncating) on longer input. We use the `bcrypt`
+# library directly because passlib 1.7.4 (last released 2020) is incompatible
+# with bcrypt 5.x — it can't read the version and mis-handles the backend.
+_BCRYPT_MAX_BYTES = 72
+
+
+def _truncate_password(password: str) -> bytes:
+    """Encode to UTF-8 and cap at bcrypt's 72-byte limit (boundary-safe)."""
+    encoded = password.encode("utf-8")
+    if len(encoded) <= _BCRYPT_MAX_BYTES:
+        return encoded
+    # Truncate without splitting a multi-byte character mid-sequence.
+    return encoded[:_BCRYPT_MAX_BYTES].decode("utf-8", "ignore").encode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    if not plain_password or not hashed_password:
+        return False
+    try:
+        return bcrypt.checkpw(_truncate_password(plain_password), hashed_password.encode("utf-8"))
+    except (ValueError, TypeError):
+        # Malformed hash (e.g. the empty-hash demo user) — treat as no match.
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(_truncate_password(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
