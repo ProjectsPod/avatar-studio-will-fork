@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -59,10 +59,41 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
+def _set_auth_cookie(response: Response, token: str) -> None:
+    """Store the JWT in an httpOnly cookie so JS can't read it (XSS-safe)."""
+    response.set_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        value=token,
+        max_age=settings.JWT_EXPIRATION_HOURS * 3600,
+        httponly=True,
+        secure=settings.AUTH_COOKIE_SECURE,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        domain=settings.AUTH_COOKIE_DOMAIN,
+        path="/",
+    )
+
+
+def _clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        domain=settings.AUTH_COOKIE_DOMAIN,
+        path="/",
+    )
+
+
 async def get_current_user(
-    token: Optional[str] = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> Optional[User]:
-    """Get current authenticated user, or None if no token"""
+    """
+    Resolve the current user from (in priority order):
+      1. the `Authorization: Bearer` header (API clients, cross-origin)
+      2. the httpOnly auth cookie (browser sessions — XSS-safe)
+    Returns None when neither yields a valid, known user.
+    """
+    if token is None:
+        token = request.cookies.get(settings.AUTH_COOKIE_NAME)
     if token is None:
         return None
     try:
@@ -135,9 +166,15 @@ async def register_user(user_data: UserCreate, db: AsyncSession = Depends(get_db
 
 @router.post("/login", response_model=Token)
 async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Login and get access token"""
+    """
+    Authenticate and issue a JWT. The token is BOTH returned in the body
+    (for API clients) AND set as an httpOnly cookie (for browser sessions —
+    not readable by JS, so XSS can't steal it).
+    """
     try:
         result = await db.execute(select(User).where(User.email == form_data.username))
         user = result.scalar_one_or_none()
@@ -160,6 +197,7 @@ async def login(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
 
         access_token = create_access_token(data={"sub": user.id})
+        _set_auth_cookie(response, access_token)
         return Token(access_token=access_token, token_type="bearer")
 
     except HTTPException:
@@ -169,6 +207,14 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Login failed"
         )
+
+
+@router.post("/logout")
+async def logout(response: Response):
+    """Clear the auth cookie. Stateless JWTs can't be server-revoked, so this
+    just removes the browser's cookie; bearer-token clients simply drop theirs."""
+    _clear_auth_cookie(response)
+    return {"detail": "Logged out"}
 
 
 @router.get("/me", response_model=UserResponse)

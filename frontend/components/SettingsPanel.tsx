@@ -194,6 +194,7 @@ export function SettingsPanel() {
         </p>
         <button
           onClick={() => {
+            api.logout()
             clearAuth()
             toast('Signed out', { icon: '👋' })
           }}

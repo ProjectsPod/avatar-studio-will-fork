@@ -24,6 +24,11 @@ function readToken(): string | null {
 const apiClient = axios.create({
   baseURL: API_URL,
   timeout: 30000,
+  // Send the httpOnly auth cookie the backend sets on login. Combined with
+  // the bearer header (kept for cross-origin API use), this lets the browser
+  // authenticate via the XSS-safe cookie. Requires the backend's CORS
+  // allow_credentials=true + explicit origin (both already configured).
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -73,6 +78,15 @@ export const api = {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
     return response.data
+  },
+
+  logout: async () => {
+    // Clears the server-set httpOnly cookie. Best-effort — ignore failures.
+    try {
+      await apiClient.post('/api/v1/users/logout')
+    } catch {
+      /* network error on logout is non-fatal */
+    }
   },
 
   getProfile: async () => {

@@ -53,6 +53,48 @@ async def test_login_success(client: AsyncClient, test_user):
 
 
 @pytest.mark.asyncio
+async def test_login_sets_httponly_cookie(client: AsyncClient, test_user):
+    """Login sets an httpOnly auth cookie so the token isn't exposed to JS."""
+    response = await client.post(
+        "/api/v1/users/login",
+        data={"username": "test@example.com", "password": "testpassword123"},
+    )
+    assert response.status_code == 200
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "access_token=" in set_cookie
+    assert "httponly" in set_cookie.lower()
+
+
+@pytest.mark.asyncio
+async def test_cookie_authenticates_without_bearer_header(client: AsyncClient, test_user):
+    """After login, the persisted cookie alone authenticates /me (no header)."""
+    await client.post(
+        "/api/v1/users/login",
+        data={"username": "test@example.com", "password": "testpassword123"},
+    )
+    # httpx keeps the Set-Cookie in its jar — this request carries no
+    # Authorization header, only the cookie.
+    response = await client.get("/api/v1/users/me")
+    assert response.status_code == 200
+    assert response.json()["email"] == "test@example.com"
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_cookie(client: AsyncClient, test_user):
+    """Logout removes the cookie, so subsequent cookie-only requests are 401."""
+    await client.post(
+        "/api/v1/users/login",
+        data={"username": "test@example.com", "password": "testpassword123"},
+    )
+    logout = await client.post("/api/v1/users/logout")
+    assert logout.status_code == 200
+    # Cookie jar cleared → /me without a bearer header is now unauthenticated.
+    client.cookies.clear()
+    response = await client.get("/api/v1/users/me")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_login_wrong_password(client: AsyncClient, test_user):
     """Test login with incorrect password."""
     response = await client.post(

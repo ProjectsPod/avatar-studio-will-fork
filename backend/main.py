@@ -302,6 +302,10 @@ async def websocket_endpoint(
     session_id: str,
     token: str | None = Query(default=None),
 ):
+    # Prefer the explicit ?token= (cross-origin clients); fall back to the
+    # httpOnly auth cookie the browser sends automatically on same-site WS.
+    if token is None:
+        token = websocket.cookies.get(settings.AUTH_COOKIE_NAME)
     user_id = await _verify_ws_session(session_id, token)
     if user_id is None:
         # 4401 is a custom WebSocket close code we use for auth failures

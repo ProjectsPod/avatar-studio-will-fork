@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_HOURS: int = 24
 
+    # Auth cookie. Login sets the JWT in an httpOnly cookie (not readable by
+    # JS → not stealable via XSS). `Secure` should be true in production
+    # (HTTPS only); SameSite=lax works across same-site ports (localhost:3000
+    # → :8000 in dev) and blocks cross-site POST, which covers most CSRF.
+    AUTH_COOKIE_NAME: str = "access_token"
+    AUTH_COOKIE_SECURE: bool = False  # set true in production (.env.prod)
+    AUTH_COOKIE_SAMESITE: str = "lax"  # lax | strict | none
+    AUTH_COOKIE_DOMAIN: Optional[str] = None
+
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_PER_HOUR: int = 1000
