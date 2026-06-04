@@ -69,12 +69,19 @@ async def upload_avatar(
             temp_processed.read_bytes(), image_key, content_type="image/jpeg"
         )
 
-        thumb_path = Path(metadata.get("thumbnail_path", ""))
+        # Resolve the thumbnail path defensively: an empty/missing value would
+        # make Path("") == Path(".") (the cwd), so guard against it explicitly
+        # and fall back to the processed image when there's no real thumbnail.
+        thumb_value = metadata.get("thumbnail_path") or ""
+        thumb_file = Path(thumb_value) if thumb_value else None
         thumb_key = f"avatars/{avatar_id}/thumbnail.jpg"
+        thumb_bytes = (
+            thumb_file.read_bytes()
+            if thumb_file and thumb_file.is_file()
+            else temp_processed.read_bytes()
+        )
         thumbnail_url = await storage_service.upload_file(
-            thumb_path.read_bytes() if thumb_path.exists() else temp_processed.read_bytes(),
-            thumb_key,
-            content_type="image/jpeg",
+            thumb_bytes, thumb_key, content_type="image/jpeg"
         )
 
     except HTTPException:
@@ -85,9 +92,13 @@ async def upload_avatar(
     finally:
         temp_orig.unlink(missing_ok=True)
         temp_processed.unlink(missing_ok=True)
-        thumb_path = Path(metadata.get("thumbnail_path", ""))
-        if thumb_path.exists():
-            thumb_path.unlink(missing_ok=True)
+        # is_file() guards against the Path("") == "." footgun — never unlink
+        # a directory.
+        thumb_value = metadata.get("thumbnail_path") or ""
+        if thumb_value:
+            thumb_file = Path(thumb_value)
+            if thumb_file.is_file():
+                thumb_file.unlink(missing_ok=True)
 
     avatar = Avatar(
         id=avatar_id,
