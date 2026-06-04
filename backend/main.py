@@ -22,6 +22,7 @@ from app.models import Session as SessionModel
 from app.models import User
 from app.services.cache import cache_service
 from app.services.storage import storage_service
+from app.telemetry import init_telemetry
 from app.websocket import websocket_manager
 
 # Configure logging FIRST — every import below may log on module load.
@@ -144,6 +145,9 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Prometheus metrics
 if settings.PROMETHEUS_ENABLED:
     Instrumentator().instrument(app).expose(app)
+
+# Distributed tracing (no-op unless OTEL_ENABLED + packages installed)
+init_telemetry(app)
 
 # Routers
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])

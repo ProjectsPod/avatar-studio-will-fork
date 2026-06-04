@@ -28,7 +28,6 @@ from app.websocket import (
     _drain_chunks,
 )
 
-
 # ── chunker (first-frame latency) ───────────────────────────────────────────
 
 

@@ -105,6 +105,15 @@ class Settings(BaseSettings):
     SENTRY_DSN: Optional[str] = None
     PROMETHEUS_ENABLED: bool = True
 
+    # Distributed tracing (OpenTelemetry). Off by default — when enabled,
+    # requires the optional `opentelemetry-*` packages (see
+    # requirements-otel.txt). Spans are no-ops when disabled, so the
+    # instrumentation in the hot path costs nothing in the default build.
+    OTEL_ENABLED: bool = False
+    OTEL_SERVICE_NAME: str = "avatar-backend"
+    # OTLP/gRPC collector endpoint, e.g. "http://otel-collector:4317".
+    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+
     # URLs
     FRONTEND_URL: str = "http://localhost:3000"
     BACKEND_URL: str = "http://localhost:8000"

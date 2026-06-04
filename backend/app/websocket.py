@@ -18,6 +18,7 @@ from app.services.llm import llm_service
 from app.services.storage import storage_service
 from app.services.stt import stt_service
 from app.services.tts import tts_service
+from app.telemetry import span
 
 logger = logging.getLogger(__name__)
 TMPDIR = Path(tempfile.gettempdir())
@@ -563,11 +564,15 @@ class ConnectionManager:
             # Bounded queue prevents the LLM producer from racing too far ahead
             sentence_queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=4)
 
-            results = await asyncio.gather(
-                self._llm_producer(session_id, messages, system_prompt, sentence_queue),
-                self._animate_from_queue(session_id, sentence_queue),
-                return_exceptions=True,
-            )
+            # Parent span for the whole turn — child spans (llm.stream,
+            # tts.synthesize, avatar.animate, storage.upload) nest under it
+            # so a trace shows exactly where a slow turn spent its time.
+            with span("chat.turn", **{"input_chars": len(text)}):
+                results = await asyncio.gather(
+                    self._llm_producer(session_id, messages, system_prompt, sentence_queue),
+                    self._animate_from_queue(session_id, sentence_queue),
+                    return_exceptions=True,
+                )
 
             # Check for errors
             for r in results:
@@ -608,22 +613,23 @@ class ConnectionManager:
         first_chunk_sent = False
 
         try:
-            async for token in llm_service.stream_response(messages, system_prompt):
-                if session_id not in self.active_connections:
-                    break  # client disconnected
+            with span("llm.stream", **{"history_len": len(messages)}):
+                async for token in llm_service.stream_response(messages, system_prompt):
+                    if session_id not in self.active_connections:
+                        break  # client disconnected
 
-                full_text += token
-                buf += token
+                    full_text += token
+                    buf += token
 
-                # Send live token to frontend
-                await self.send_message(session_id, {"type": "token", "token": token})
+                    # Send live token to frontend
+                    await self.send_message(session_id, {"type": "token", "token": token})
 
-                sep = _SENTENCE_RE if first_chunk_sent else _CLAUSE_RE
-                min_len = _MIN_SENTENCE_LEN if first_chunk_sent else _MIN_FIRST_CHUNK_LEN
-                chunks, buf = _drain_chunks(buf, sep, min_len, _MAX_CHUNK_CHARS)
-                for chunk in chunks:
-                    await queue.put(chunk)
-                    first_chunk_sent = True
+                    sep = _SENTENCE_RE if first_chunk_sent else _CLAUSE_RE
+                    min_len = _MIN_SENTENCE_LEN if first_chunk_sent else _MIN_FIRST_CHUNK_LEN
+                    chunks, buf = _drain_chunks(buf, sep, min_len, _MAX_CHUNK_CHARS)
+                    for chunk in chunks:
+                        await queue.put(chunk)
+                        first_chunk_sent = True
 
             # Flush any remaining tail — it's the end of the reply, so speak it
             # even if it's short.
@@ -704,12 +710,16 @@ class ConnectionManager:
                     },
                 )
 
-                synth = await tts_service.synthesize(
-                    text=sentence,
-                    output_path=str(tmp_audio),
-                    speaker_wav=speaker_wav,
-                    language=language,
-                )
+                with span(
+                    "tts.synthesize",
+                    **{"chars": len(sentence), "lang": language, "cloned": bool(speaker_wav)},
+                ):
+                    synth = await tts_service.synthesize(
+                        text=sentence,
+                        output_path=str(tmp_audio),
+                        speaker_wav=speaker_wav,
+                        language=language,
+                    )
 
                 # Notify the client exactly once if Chatterbox bailed and
                 # we ended up serving the un-cloned gTTS voice instead.
@@ -729,17 +739,19 @@ class ConnectionManager:
                         },
                     )
 
-                await avatar_animator.animate(
-                    avatar_image_path=avatar_image,
-                    audio_path=str(tmp_audio),
-                    output_path=str(tmp_video),
-                )
+                with span("avatar.animate", **{"chunk": chunk_index}):
+                    await avatar_animator.animate(
+                        avatar_image_path=avatar_image,
+                        audio_path=str(tmp_audio),
+                        output_path=str(tmp_video),
+                    )
 
                 ts = int(datetime.now(timezone.utc).timestamp() * 1000)
                 video_key = f"videos/{session_id}/{ts}_c{chunk_index}.mp4"
-                video_url = await storage_service.upload_file(
-                    tmp_video.read_bytes(), video_key, content_type="video/mp4"
-                )
+                with span("storage.upload", **{"chunk": chunk_index}):
+                    video_url = await storage_service.upload_file(
+                        tmp_video.read_bytes(), video_key, content_type="video/mp4"
+                    )
 
                 await self.send_message(
                     session_id,
