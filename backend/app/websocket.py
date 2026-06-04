@@ -60,8 +60,59 @@ def _write_private_bytes(path: Path, data: bytes) -> None:
         pass
 
 
-# Minimum sentence length (chars) to bother animating
+# ── chunking thresholds (first-frame latency vs prosody trade-off) ──────────
+# The opening fragment ships at the first CLAUSE boundary (comma/semicolon/
+# colon/dash) once it's long enough, so audio+video start as early as
+# possible. Every chunk after that uses SENTENCE boundaries — fewer TTS
+# calls and smoother prosody for the bulk of the reply.
 _MIN_SENTENCE_LEN = 8
+_MIN_FIRST_CHUNK_LEN = 10  # ship the opening clause fast (~2 words)
+# Force-flush a run-on with no usable punctuation so we never stall waiting
+# for a boundary that may never come.
+_MAX_CHUNK_CHARS = 200
+
+# Boundary regexes. Lookbehind keeps the punctuation attached to the chunk
+# (better TTS prosody than trailing a bare clause).
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+_CLAUSE_RE = re.compile(r"(?<=[.!?,;:—])\s+")
+
+
+def _drain_chunks(buf: str, sep_re: "re.Pattern[str]", min_len: int, max_len: int):
+    """
+    Pull speakable chunks out of an in-progress LLM buffer without ever
+    dropping text. Returns (chunks_ready_to_speak, remaining_buffer).
+
+    A chunk is emitted at a punctuation boundary only once the text up to
+    that boundary is at least `min_len` chars — short leading fragments
+    (e.g. "Hi,") stay in the buffer and merge forward instead of being
+    spoken as their own tiny clip. A run-on longer than `max_len` with no
+    usable boundary is force-flushed at the last space.
+    """
+    chunks: list[str] = []
+
+    # Emit complete punctuation-bounded segments that meet the length bar.
+    while True:
+        emitted = False
+        for m in sep_re.finditer(buf):
+            head = buf[: m.end()].strip()
+            if len(head) >= min_len:
+                chunks.append(head)
+                buf = buf[m.end() :]
+                emitted = True
+                break
+        if not emitted:
+            break
+
+    # Backstop: no punctuation but the buffer is getting long — cut at a space.
+    while len(buf) >= max_len:
+        cut = buf.rfind(" ", 0, max_len)
+        if cut <= 0:
+            break
+        chunks.append(buf[:cut].strip())
+        buf = buf[cut:].lstrip()
+
+    return chunks, buf
+
 
 # Per-message input cap. Long inputs waste LLM tokens and create DoS surface.
 MAX_TEXT_INPUT_LEN = 4000
@@ -536,8 +587,6 @@ class ConnectionManager:
 
     # ── streaming pipeline ────────────────────────────────────────────────────
 
-    _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
-
     async def _llm_producer(
         self,
         session_id: str,
@@ -546,12 +595,17 @@ class ConnectionManager:
         queue: "asyncio.Queue[Optional[str]]",
     ) -> str:
         """
-        Stream LLM tokens, emit `token` events to frontend,
-        detect sentence boundaries and push complete sentences into the queue.
-        Returns the complete response text.
+        Stream LLM tokens, emit `token` events to the frontend, and push
+        speakable chunks into the queue as boundaries are reached.
+
+        Latency strategy: the FIRST chunk is split on clause boundaries with
+        a low length bar so TTS+animation can start within the opening few
+        words; every chunk after that uses sentence boundaries for smoother
+        prosody and fewer synthesis calls. Returns the complete response text.
         """
         buf = ""
         full_text = ""
+        first_chunk_sent = False
 
         try:
             async for token in llm_service.stream_response(messages, system_prompt):
@@ -564,18 +618,17 @@ class ConnectionManager:
                 # Send live token to frontend
                 await self.send_message(session_id, {"type": "token", "token": token})
 
-                # Split on sentence boundaries; keep the incomplete tail in buf
-                parts = self._SENTENCE_RE.split(buf)
-                if len(parts) > 1:
-                    for sentence in parts[:-1]:
-                        sentence = sentence.strip()
-                        if len(sentence) >= _MIN_SENTENCE_LEN:
-                            await queue.put(sentence)
-                    buf = parts[-1]
+                sep = _SENTENCE_RE if first_chunk_sent else _CLAUSE_RE
+                min_len = _MIN_SENTENCE_LEN if first_chunk_sent else _MIN_FIRST_CHUNK_LEN
+                chunks, buf = _drain_chunks(buf, sep, min_len, _MAX_CHUNK_CHARS)
+                for chunk in chunks:
+                    await queue.put(chunk)
+                    first_chunk_sent = True
 
-            # Flush remaining buffer
+            # Flush any remaining tail — it's the end of the reply, so speak it
+            # even if it's short.
             remainder = buf.strip()
-            if len(remainder) >= _MIN_SENTENCE_LEN:
+            if remainder:
                 await queue.put(remainder)
 
         except Exception as e:

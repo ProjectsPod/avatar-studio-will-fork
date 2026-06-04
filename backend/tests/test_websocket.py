@@ -17,7 +17,56 @@ import asyncio
 
 import pytest
 
-from app.websocket import MAX_TEXT_INPUT_LEN, ConnectionManager
+from app.websocket import (
+    _CLAUSE_RE,
+    _MAX_CHUNK_CHARS,
+    _MIN_FIRST_CHUNK_LEN,
+    _MIN_SENTENCE_LEN,
+    _SENTENCE_RE,
+    MAX_TEXT_INPUT_LEN,
+    ConnectionManager,
+    _drain_chunks,
+)
+
+
+# ── chunker (first-frame latency) ───────────────────────────────────────────
+
+
+def test_drain_chunks_emits_at_clause_for_first_fragment():
+    """A clause boundary ships the opening fragment before the sentence ends."""
+    buf = "Sure thing, let me look that up for you right now."
+    chunks, rest = _drain_chunks(buf, _CLAUSE_RE, _MIN_FIRST_CHUNK_LEN, _MAX_CHUNK_CHARS)
+    # "Sure thing," is >= 12 chars → emitted at the comma, not the period.
+    assert chunks
+    assert chunks[0].startswith("Sure thing,")
+
+
+def test_drain_chunks_never_drops_text():
+    """Short leading fragments merge forward rather than being discarded."""
+    buf = "Hi, the answer is 42 and that is final."
+    chunks, rest = _drain_chunks(buf, _CLAUSE_RE, _MIN_FIRST_CHUNK_LEN, _MAX_CHUNK_CHARS)
+    reassembled = " ".join(chunks)
+    if rest.strip():
+        reassembled = (reassembled + " " + rest).strip()
+    for word in ["Hi,", "answer", "42", "final."]:
+        assert word in reassembled
+
+
+def test_drain_chunks_force_flush_runon():
+    """A long run-on with no punctuation is cut at a space, not held forever."""
+    buf = "word " * 60  # 300 chars, no sentence punctuation
+    chunks, rest = _drain_chunks(buf, _SENTENCE_RE, _MIN_SENTENCE_LEN, _MAX_CHUNK_CHARS)
+    assert chunks  # something was force-flushed
+    assert all(len(c) <= _MAX_CHUNK_CHARS for c in chunks)
+
+
+def test_drain_chunks_holds_incomplete_buffer():
+    """With no boundary and under the cap, nothing is emitted yet."""
+    chunks, rest = _drain_chunks(
+        "partial thought with no end", _SENTENCE_RE, _MIN_SENTENCE_LEN, _MAX_CHUNK_CHARS
+    )
+    assert chunks == []
+    assert rest == "partial thought with no end"
 
 
 class FakeWebSocket:
