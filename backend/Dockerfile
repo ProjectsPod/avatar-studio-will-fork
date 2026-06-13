@@ -24,15 +24,22 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements
 COPY requirements.txt .
 
+RUN pip install --no-cache-dir numpy==1.25.2
+
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install PyTorch with CUDA 11.8 (matches base image)
+#RUN pip install --no-cache-dir \
+#    torch==2.2.0+cu118 \
+#    torchvision==0.17.0+cu118 \
+#    torchaudio==2.2.0+cu118 \
+#    --index-url https://download.pytorch.org/whl/cu118
+
 RUN pip install --no-cache-dir \
-    torch==2.2.0+cu118 \
-    torchvision==0.17.0+cu118 \
-    torchaudio==2.2.0+cu118 \
-    --index-url https://download.pytorch.org/whl/cu118
+    torch==2.2.0 \
+    torchvision==0.17.0 \
+    torchaudio==2.2.0
 
 # Copy application code
 COPY . .
