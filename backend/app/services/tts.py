@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-import torchaudio
+#import torchaudio
+
+try:
+    import torchaudio
+except Exception:  # no GB10/NGC-compatible torchaudio build — Chatterbox off, edge-tts handles TTS
+    torchaudio = None
 
 from app.config import settings
 
@@ -126,6 +131,16 @@ class TTSService:
                 )
             else:
                 logger.warning(f"Chatterbox failed ({e}), falling back to gTTS")
+            try:
+                await self._edge_fallback(text, output_path, language)
+                return SynthResult(
+                    output_path=output_path,
+                    engine="edge-tts",
+                    fallback=True,
+                    voice_cloned=False,
+                )
+            except Exception as ee:
+                logger.warning(f"edge-tts failed ({ee}), falling back to gTTS")
             await self._gtts_fallback(text, output_path, language)
             return SynthResult(
                 output_path=output_path,
@@ -133,6 +148,41 @@ class TTSService:
                 fallback=True,
                 voice_cloned=False,
             )
+
+    async def _edge_fallback(self, text: str, output_path: str, language: str = "en") -> str:
+        """Neural fallback using Microsoft edge-tts — no GPU or local model, far
+        better quality than gTTS. Produces a WAV at output_path."""
+        import edge_tts
+        # Map language → a default neural voice; extend as needed.
+        voice = {
+            "en": "en-US-AriaNeural",
+            "es": "es-ES-ElviraNeural",
+            "fr": "fr-FR-DeniseNeural",
+            "de": "de-DE-KatjaNeural",
+            "it": "it-IT-ElsaNeural",
+            "pt": "pt-BR-FranciscaNeural",
+            "hi": "hi-IN-SwaraNeural",
+            "zh": "zh-CN-XiaoxiaoNeural",
+            "ja": "ja-JP-NanamiNeural",
+            "ko": "ko-KR-SunHiNeural",
+        }.get(language, "en-US-AriaNeural")
+
+        logger.info(f"Synthesizing (edge-tts, voice={voice}): {text[:80]}...")
+        mp3_path = output_path.replace(".wav", "_edge.mp3")
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(mp3_path)
+
+        # Convert MP3 → WAV to match the rest of the pipeline (mirror _gtts_fallback).
+        import subprocess
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", mp3_path, output_path],
+                check=True,
+            ),
+        )
+        logger.info(f"edge-tts synthesis complete: {output_path}")
+        return output_path
 
     async def _gtts_fallback(self, text: str, output_path: str, language: str = "en") -> str:
         """Network-only fallback using Google TTS — no GPU/local model required."""

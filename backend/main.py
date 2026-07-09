@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -44,6 +45,16 @@ if settings.SENTRY_DSN:
     except Exception as e:
         logger.warning(f"Failed to initialize Sentry: {e}")
 
+async def _prewarm_animator():
+    """Load MuseTalk models at startup so the first message doesn't pay ~11s."""
+    try:
+        from app.services.animator import avatar_animator
+        await avatar_animator.initialize()
+        if avatar_animator.engine == "musetalk":
+            await avatar_animator._ensure_worker()
+            logger.info("MuseTalk worker pre-warmed at startup")
+    except Exception as e:
+        logger.warning(f"Animator pre-warm failed (will load lazily on first use): {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -109,6 +120,9 @@ async def lifespan(app: FastAPI):
 
     websocket_manager.start_cleanup_task()
     logger.info("AI Avatar System started successfully")
+
+    # Pre-warm MuseTalk so the first user message skips the model-load delay.
+    asyncio.create_task(_prewarm_animator())
 
     yield
 
