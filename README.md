@@ -1,3 +1,6 @@
+# A fork from the original AvatarAI repo at https://github.com/PunithVT/ai-avatar-system
+
+
 <div align="center">
 
 <h1>🎭 AvatarAI — Real-Time AI Avatar Platform</h1>
