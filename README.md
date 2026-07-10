@@ -1,7 +1,7 @@
-# A fork from the original AvatarAI repo at https://github.com/PunithVT/ai-avatar-system
+# A fork from the original AvatarAI repo at https://github.com/PunithVT/ai-avatar-system <br>
 
 
-## Purpose is to get AvatarAI to run in 1) a distributed architecture and 2) a Nvidia DGX Spark with a GB10 GPU and ARM architecture
+## Purpose is to get AvatarAI to run in 1) a distributed architecture and 2) a Nvidia DGX Spark with a GB10 GPU and ARM architecture <br>
 
 
 
