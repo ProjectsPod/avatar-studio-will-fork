@@ -207,6 +207,8 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
   const chunkQueueRef = useRef<VideoChunk[]>([])
   const isPlayingRef = useRef(false)
 
+  const turnHadVideoRef = useRef(false)
+
   const videoRef = useRef<HTMLVideoElement>(null)
   // Hidden video element used to preload the next chunk while the current one plays
   const preloadVideoRef = useRef<HTMLVideoElement>(null)
@@ -426,11 +428,19 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         chunkQueueRef.current.push(chunk)
         setCurrentChunkProgress(prev => ({ current: data.chunk_index + 1, total: prev.total }))
         // First chunk arriving → record latency, clear spinner, start playback
+        /*
         if (!isPlayingRef.current) {
           if (sendTimeRef.current) setLatencyMs(Date.now() - sendTimeRef.current)
           setIsProcessing(false)
           playNextChunk()
-        } else {
+        }*/
+        setIsProcessing(false)   // any chunk arriving means we're past "processing"
+        turnHadVideoRef.current = true
+        if (!isPlayingRef.current) {
+          if (sendTimeRef.current) setLatencyMs(Date.now() - sendTimeRef.current)
+          playNextChunk()
+        }
+        else {
           // Already playing — preload this incoming chunk
           const upcoming = chunkQueueRef.current[0]
           if (upcoming && preloadVideoRef.current && preloadVideoRef.current.src !== upcoming.url) {
@@ -446,8 +456,14 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
         break
 
       case 'status':
+        /*
         setIsProcessing(true)
         setStatusMsg(data.message || 'Processing…')
+        */
+        if (!turnHadVideoRef.current) {
+          setIsProcessing(true)
+          setStatusMsg(data.message || 'Processing…')
+        }
         break
 
       case 'error':
@@ -503,6 +519,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
     sendTimeRef.current = Date.now()
     chunkQueueRef.current = []
     isPlayingRef.current = false
+    turnHadVideoRef.current = false
     setShowVideo(false)
   }
 
@@ -756,6 +773,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
             <video ref={preloadVideoRef} className="hidden" preload="auto" muted />
 
             {/* ── Processing overlay ── */}
+            {/*
             {isProcessing && (
               <div className="absolute inset-0 bg-surface-950/75 backdrop-blur-sm flex flex-col
                               items-center justify-center gap-4 z-20">
@@ -768,8 +786,21 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
                 <p className="text-sm text-gray-300 font-medium animate-pulse">{statusMsg}</p>
               </div>
             )}
+            */}
+
+            {/* ── Processing overlay ── */}
+            {isProcessing && (
+              <div className="absolute bottom-3 right-3 z-20 flex items-center gap-2.5
+                              bg-black/50 backdrop-blur-sm px-4 py-2 rounded-full
+                              border border-white/10">
+                <span className="w-4 h-4 rounded-full border-2 border-t-primary-400
+                                 border-white/20 animate-spin" />
+                <span className="text-base text-white font-medium">{statusMsg}</span>
+              </div>
+            )}
 
             {/* ── Chunk progress badge (shows while more chunks are coming) ── */}
+            {/*
             {isSpeaking && currentChunkProgress.total > 1 && (
               <div className="absolute top-3 right-3 z-30 flex items-center gap-1.5 bg-black/50
                               backdrop-blur-sm px-2.5 py-1.5 rounded-full border border-white/10">
@@ -779,6 +810,7 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
                 </span>
               </div>
             )}
+            */}
           </div>
 
           {/* Controls bar */}
@@ -792,6 +824,18 @@ export function ChatInterface({ avatarId, voiceId, resumeSessionId, onSessionCre
                 }`} />
                 <span className="text-gray-400 capitalize">{connectionStatus}</span>
               </div>
+
+              
+              {/* ── New Chunk progress badge ── */}
+              {isSpeaking && currentChunkProgress.total > 1 && (
+                <div className="flex items-center gap-1.5 ml-3">
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary-400 animate-pulse" />
+                  <span className="text-[10px] text-gray-400 font-medium">
+                    Animating {currentChunkProgress.current}/{currentChunkProgress.total}
+                  </span>
+                </div>
+              )}
+
               {reconnectStalled && (
                 <button
                   onClick={manualReconnect}

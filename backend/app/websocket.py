@@ -553,6 +553,7 @@ class ConnectionManager:
                 messages = messages[-MAX_CONTEXT_MESSAGES:]
 
             system_prompt = data.get("system_prompt")
+            language = data.get("language", "en")
 
             # Persist the user turn before kicking off generation so it's
             # durable even if the model fails partway through.
@@ -572,7 +573,7 @@ class ConnectionManager:
             # so a trace shows exactly where a slow turn spent its time.
             with span("chat.turn", **{"input_chars": len(text)}):
                 results = await asyncio.gather(
-                    self._llm_producer(session_id, messages, system_prompt, sentence_queue),
+                    self._llm_producer(session_id, messages, system_prompt, language, sentence_queue),
                     self._animate_from_queue(session_id, sentence_queue),
                     return_exceptions=True,
                 )
@@ -600,6 +601,7 @@ class ConnectionManager:
         session_id: str,
         messages: List[dict],
         system_prompt: Optional[str],
+        language: str,
         queue: "asyncio.Queue[Optional[str]]",
     ) -> str:
         """
@@ -617,7 +619,7 @@ class ConnectionManager:
 
         try:
             with span("llm.stream", **{"history_len": len(messages)}):
-                async for token in llm_service.stream_response(messages, system_prompt):
+                async for token in llm_service.stream_response(messages, system_prompt, language):
                     if session_id not in self.active_connections:
                         break  # client disconnected
 

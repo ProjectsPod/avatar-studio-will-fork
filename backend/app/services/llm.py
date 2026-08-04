@@ -31,10 +31,35 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+"""
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful AI assistant in a real-time avatar conversation system. "
     "Keep replies concise and conversational so they can be spoken aloud."
 )
+"""
+
+_VOICE_FORMAT_RULES = (
+    " Your replies are spoken aloud by a talking avatar, so Keep replies short and "
+    "conversational — a few spoken sentences at most. "
+    "For a long explanation, give one step at a time and check in before continuing. "
+    "No markdown, no asterisks, no "
+    "headers, no bullet points, no numbered lists, no emojis. Plain spoken "
+    "prose only. If a topic is large, give the one-sentence version and offer "
+    "to go deeper."
+)
+
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a friendly math and science tutor speaking with a student through "
+    "a real-time avatar. Your job is to help them understand concepts, work "
+    "through problems, and build confidence. Be warm, patient, and encouraging "
+    "at all times. When a student struggles or makes a mistake, respond with "
+    "sympathy and reassurance first, then guide them toward the answer with "
+    "questions and hints rather than just giving it away. Celebrate their "
+    "progress. Never make them feel judged for not knowing something."
+)
+
+_LANG_NAMES = {"en": "English", "es": "Spanish", "fr": "French", "hi": "Hindi",
+               "it": "Italian", "ja": "Japanese", "pt": "Portuguese", "zh": "Chinese"}
 
 # Extended-thinking budget. Claude 4.x Opus supports up to 128k thinking
 # tokens; for an interactive avatar we want responses fast, so we cap the
@@ -58,13 +83,15 @@ class LLMUnavailable(LLMError):
     """Network failure, timeout, or 5xx from the provider."""
 
 
-def _cacheable_system(system_prompt: Optional[str]) -> list[dict]:
+def _cacheable_system(system_prompt: Optional[str], language: str = "en") -> list[dict]:
     """
     Build a system block list with prompt-cache marking applied to the
     (long-lived) system prompt. The SDK accepts either a plain string OR
     a list of blocks; blocks are needed to attach `cache_control` per-block.
     """
-    text = system_prompt or DEFAULT_SYSTEM_PROMPT
+    #text = system_prompt or DEFAULT_SYSTEM_PROMPT
+    lang_rule = f" Always respond in {_LANG_NAMES.get(language, 'English')}, regardless of the language the user writes in."
+    text = (system_prompt or DEFAULT_SYSTEM_PROMPT) + _VOICE_FORMAT_RULES + lang_rule
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
@@ -169,9 +196,15 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
+        language: str = "en",
     ) -> str:
+        """
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}] + messages
+        """
+        lang_rule = f" Always respond in {_LANG_NAMES.get(language, 'English')}, regardless of the language the user writes in."
+        sys_text = (system_prompt or DEFAULT_SYSTEM_PROMPT) + _VOICE_FORMAT_RULES + lang_rule
+        messages = [{"role": "system", "content": sys_text}] + messages
 
         try:
             response = await self.client.chat.completions.create(
@@ -193,12 +226,13 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
+        language: str = "en",
     ) -> AsyncGenerator[str, None]:
         if self.provider == "anthropic":
-            async for chunk in self._stream_anthropic(messages, system_prompt):
+            async for chunk in self._stream_anthropic(messages, system_prompt, language):
                 yield chunk
         elif self.provider == "openai":
-            async for chunk in self._stream_openai(messages, system_prompt):
+            async for chunk in self._stream_openai(messages, system_prompt, language):
                 yield chunk
         else:
             raise LLMError(f"Unsupported LLM provider: {self.provider}")
@@ -207,13 +241,14 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
+        language: str = "en",
     ) -> AsyncGenerator[str, None]:
         try:
             async with self.client.messages.stream(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
-                system=_cacheable_system(system_prompt),
+                system=_cacheable_system(system_prompt, language),
                 messages=messages,
             ) as stream:
                 async for text in stream.text_stream:
@@ -227,9 +262,15 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
+        language: str = "en",
     ) -> AsyncGenerator[str, None]:
+        """
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}] + messages
+        """
+        lang_rule = f" Always respond in {_LANG_NAMES.get(language, 'English')}, regardless of the language the user writes in."
+        sys_text = (system_prompt or DEFAULT_SYSTEM_PROMPT) + _VOICE_FORMAT_RULES + lang_rule
+        messages = [{"role": "system", "content": sys_text}] + messages
 
         try:
             stream = await self.client.chat.completions.create(
