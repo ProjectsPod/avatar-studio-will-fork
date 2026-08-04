@@ -3,7 +3,16 @@
 
 ## Purpose is to get AvatarAI to run in 1) a distributed architecture and 2) a Nvidia DGX Spark with a GB10 GPU and ARM architecture 
 <br>
+### Latest branch is ui/move-animating-badge
 <br>
+### Update 1: Re-architected to a distributed system with 1) backend sits in DGX while 2) UI is a web browser in a separate client
+### More to come about the "dockerization" for this distributed architecture
+<br>
+### Update 2 - 08/04/2026: 
+### llm.py was modified to enable LLM generated contents in the desired language and TTS voice the same language. websocket.py was modified for routing
+### language drop-down to llm.py
+### llm.py also now includes prompts to 1) ensure the LLM generated contents is friendly, sympathetic, short/manageable prose only and 2) short enough to reduce latency
+### ChatInterfact.tsx was modified to move the "Animating" status badge off the face of the avatar
 <br>
 
 
