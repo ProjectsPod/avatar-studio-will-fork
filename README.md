@@ -2,7 +2,7 @@
 
 ## Purpose is to get AvatarAI to run in 1) a distributed architecture and 2) a Nvidia DGX Spark with a GB10 GPU and ARM architecture <br>
 
-### Latest branch is ui/move-animating-badge <br>
+## Latest branch is ui/move-animating-badge <br>
 
 ### Update 1: Re-architected to a distributed system with 1) backend sits in DGX while 2) UI is a web browser in a separate client
 ### More to come about the "dockerization" for this distributed architecture
